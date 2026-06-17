@@ -1,0 +1,150 @@
+# GestRisk AI WhatsApp — WAHA + n8n
+# https://waha.devlike.pro/ | https://docs.n8n.io/
+
+name: gestrisk-ai-whatsapp
+
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: gestrisk-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      # Bind e protocolo (HTTP explícito para ambiente interno / sem TLS direto no container)
+      N8N_HOST: 0.0.0.0
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      NODE_ENV: production
+      GENERIC_TIMEZONE: ${TZ:-America/Sao_Paulo}
+      TZ: ${TZ:-America/Sao_Paulo}
+      # Webhooks e cookies em HTTP (use HTTPS + WEBHOOK_URL público atrás de proxy em produção)
+      N8N_SECURE_COOKIE: "false"
+      # URL base pública dos webhooks (ajuste se usar domínio ou proxy reverso)
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5678/}
+      # Defina no .env (recomendado: openssl rand -hex 32). Se vazio, o n8n gera na primeira subida.
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-}
+      # Autenticação opcional na UI (recomendado se expuser a rede)
+      N8N_BASIC_AUTH_ACTIVE: ${N8N_BASIC_AUTH_ACTIVE:-false}
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:-}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD:-}
+      # Chamadas HTTP a APIs externas e para o WAHA a partir dos workflows
+      N8N_DEFAULT_BINARY_DATA_MODE: filesystem
+      # n8n v2+: sem isto, {{ $env.* }} nas expressões falha (“access to env vars denied”)
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      # Workflow GestRisk (Gemini + Supabase) — preencha no .env
+      # Modelo REST (evite *-preview em produção — costumam dar 503 sob pico de demanda)
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3-flash-preview}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      GESTRISK_DEFAULT_GESTANTE_ID: ${GESTRISK_DEFAULT_GESTANTE_ID:-GEST-001}
+      # Laravel — histórico WhatsApp (POST /api/gestante-whatsapp)
+      LARAVEL_APP_URL: ${LARAVEL_APP_URL:-}
+      WAHA_WEBHOOK_SECRET: ${WAHA_WEBHOOK_SECRET:-}
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - gestrisk
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"require('http').get('http://127.0.0.1:5678/healthz',(r)=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\"",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  waha:
+    # Core (sem login no Docker Hub). Para WAHA Plus: devlikeapro/waha-plus + docker login
+    image: devlikeapro/waha:latest
+    container_name: gestrisk-waha
+    restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    ports:
+      - "3000:3000"
+    environment:
+      WHATSAPP_API_PORT: "3000"
+      # Sem API key no Docker local: o Dashboard conecta sem colar chave (não exponha a porta 3000 na internet).
+      WAHA_NO_API_KEY: ${WAHA_NO_API_KEY:-true}
+      WAHA_API_KEY: ${WAHA_API_KEY:-}
+      WHATSAPP_API_KEY: ${WAHA_API_KEY:-}
+      WAHA_DASHBOARD_USERNAME: ${WAHA_DASHBOARD_USERNAME:-admin}
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_DASHBOARD_PASSWORD:-}
+      WHATSAPP_SWAGGER_USERNAME: ${WHATSAPP_SWAGGER_USERNAME:-admin}
+      WHATSAPP_SWAGGER_PASSWORD: ${WHATSAPP_SWAGGER_PASSWORD:-}
+      WAHA_DASHBOARD_ENABLED: ${WAHA_DASHBOARD_ENABLED:-true}
+      WHATSAPP_SWAGGER_ENABLED: ${WHATSAPP_SWAGGER_ENABLED:-true}
+      WHATSAPP_DEFAULT_ENGINE: ${WHATSAPP_DEFAULT_ENGINE:-WEBJS}
+      # URL que clientes externos usam para mídia/links (ajuste com domínio público se necessário)
+      WAHA_BASE_URL: ${WAHA_BASE_URL:-http://localhost:3000}
+      # Webhook global: tráfego Docker → n8n (path = nó Webhook do fluxo GestRisk)
+      WHATSAPP_HOOK_URL: ${WHATSAPP_HOOK_URL:-http://n8n:5678/webhook/gestrisk-whatsapp}
+      # message.any duplica o mesmo evento que 'message' — webhook disparava 2x no n8n
+      WHATSAPP_HOOK_EVENTS: ${WHATSAPP_HOOK_EVENTS:-message,session.status}
+      # QR no log opcional; o fluxo recomendado é Dashboard ou GET /api/screenshot
+      WAHA_PRINT_QR: ${WAHA_PRINT_QR:-false}
+    volumes:
+      - waha_sessions:/app/.sessions
+      - waha_media:/app/.media
+    networks:
+      - gestrisk
+    depends_on:
+      n8n:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "10"
+
+  # Cria a sessão nomeada com o telefone (DDI 55 + número) para aparecer no Dashboard; escaneie o QR com o WhatsApp desse número.
+  waha-bootstrap:
+    image: curlimages/curl:8.11.1
+    container_name: gestrisk-waha-bootstrap
+    restart: "no"
+    networks:
+      - gestrisk
+    depends_on:
+      waha:
+        condition: service_started
+    environment:
+      # Core: obrigatoriamente "default". Plus: pode usar o número como nome de sessão.
+      WAHA_SESSION_NAME: ${WAHA_SESSION_NAME:-default}
+      GESTRISK_WHATSAPP_LINE: ${GESTRISK_WHATSAPP_LINE:-5521920472118}
+    command:
+      - sh
+      - -c
+      - |
+        echo "Aguardando WAHA em http://waha:3000 ..."
+        i=0
+        while [ $$i -lt 40 ]; do
+          curl -sf "http://waha:3000/ping" >/dev/null && break
+          i=$$((i+1)); sleep 2
+        done
+        curl -sf "http://waha:3000/ping" >/dev/null || { echo "WAHA não respondeu a /ping"; exit 1; }
+        N="$$WAHA_SESSION_NAME"
+        echo "Criando/iniciando sessão $$N (no Core use sempre default; escaneie o QR com o aparelho da linha configurada no .env)..."
+        curl -sS -X POST "http://waha:3000/api/sessions" \
+          -H "Content-Type: application/json" -H "Accept: application/json" \
+          -d "{\"name\":\"$$N\"}" || true
+        curl -sS -X POST "http://waha:3000/api/sessions/$$N/start" \
+          -H "Content-Type: application/json" -H "Accept: application/json" -d "{}" || true
+        echo "Bootstrap ok. Sessão WAHA: $$N | API: POST /api/sendText + JSON {session,chatId,text} | chatId exemplo: $$GESTRISK_WHATSAPP_LINE@c.us"
+
+networks:
+  gestrisk:
+    name: gestrisk-ai-whatsapp_net
+    driver: bridge
+
+volumes:
+  n8n_data:
+    name: gestrisk-ai-whatsapp_n8n_data
+  waha_sessions:
+    name: gestrisk-ai-whatsapp_waha_sessions
+  waha_media:
+    name: gestrisk-ai-whatsapp_waha_media

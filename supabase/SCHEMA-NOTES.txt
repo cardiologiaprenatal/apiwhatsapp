@@ -1,0 +1,18 @@
+Referência GestRisk + n8n
+
+--- gestrisk_sessoes (contexto WhatsApp / Gemini) ---
+Execute: supabase/migrations/003_gestrisk_sessoes.sql
+Colunas:
+  chat_id text PRIMARY KEY  — id do chat WhatsApp (ex.: 5511999999999@c.us)
+  gestante_id text         — opcional (mapeamento Preparar_WAHA)
+  historico jsonb          — array de turnos Gemini: [{ "role": "user"|"model", "parts": [{ "text": "..." }] }, ...]
+  updated_at timestamptz
+
+O fluxo n8n faz GET por chat_id, monta contents no Gemini e faz POST com Prefer: resolution=merge-duplicates (upsert por chat_id).
+
+--- consultas / analises ---
+Não são mais usados pelo workflow exportado em workflows/GestRisk-WAHA-Gemini-Supabase.json.
+Migrações antigas (consultas idade, etc.) podem permanecer na base se já aplicadas.
+
+--- gestantes ---
+Opcional para mapear telefone -> gestante_id no nó Preparar_WAHA.

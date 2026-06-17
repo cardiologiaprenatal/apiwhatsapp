@@ -1,0 +1,415 @@
+{
+  "id": "a8f7e6d5-c4b3-4210-9876-543210fedcba",
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "name": "GestRisk — WAHA → Gemini → Sessão",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "gestrisk-whatsapp",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "name": "Webhook_WAHA",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "gestrisk-waha-gemini"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const root = items[0].json;\nconst body = root.body ?? root;\nconst event = body.event ?? root.event;\nconst payload = body.payload ?? root.payload ?? {};\n\nif (event !== 'message') {\n  return [];\n}\nif (payload.fromMe === true) {\n  return [];\n}\n\nconst message = String(payload.body ?? '').trim();\nif (!message) {\n  return [];\n}\n\nfunction waMsgId(p) {\n  const id = p && p.id;\n  if (id == null || id === '') return '';\n  if (typeof id === 'string') return id;\n  if (typeof id === 'object' && id._serialized) return String(id._serialized);\n  return String(id);\n}\n\nconst mid = waMsgId(payload);\nif (mid) {\n  const sd = $getWorkflowStaticData('global');\n  sd._gestriskSeenIds = sd._gestriskSeenIds || {};\n  const seen = sd._gestriskSeenIds;\n  const now = Date.now();\n  if (seen[mid] && now - seen[mid] < 120000) {\n    return [];\n  }\n  seen[mid] = now;\n  const keys = Object.keys(seen);\n  while (keys.length > 300) {\n    delete seen[keys.shift()];\n  }\n}\n\nconst session = body.session || root.session || 'default';\nconst helpers = this.helpers;\n\nfunction jidLocalPart(jid) {\n  const s = String(jid || '');\n  const i = s.indexOf('@');\n  return i === -1 ? s : s.slice(0, i);\n}\n\nfunction hasLid(j) {\n  return j && String(j).includes('@lid');\n}\n\nfunction isPhoneJid(j) {\n  if (!j || hasLid(j)) return false;\n  const s = String(j);\n  return s.includes('@c.us') || s.includes('@s.whatsapp.net');\n}\n\nfunction allJidCandidates(p) {\n  const key = (p._data && p._data.key) || {};\n  return [key.remoteJidAlt, key.remoteJid, key.participant, p.from, p.chatId]\n    .map((x) => (x == null ? '' : String(x).trim()))\n    .filter(Boolean);\n}\n\nfunction pickContactPhoneJid(p) {\n  const cands = allJidCandidates(p);\n  for (const j of cands) {\n    if (isPhoneJid(j)) return j;\n  }\n  for (const j of cands) {\n    if (!hasLid(j)) return j;\n  }\n  return cands[0] || '';\n}\n\nfunction toTelefoneDigits(jidOrDigits) {\n  return jidLocalPart(jidOrDigits).replace(/\\D/g, '');\n}\n\nfunction toChatIdForWaha(jid) {\n  if (!jid) return '';\n  const s = String(jid);\n  if (s.includes('@s.whatsapp.net')) {\n    return jidLocalPart(s) + '@c.us';\n  }\n  if (!s.includes('@')) {\n    return jidLocalPart(s) + '@c.us';\n  }\n  return s;\n}\n\nasync function wahaGet(pathAndQuery) {\n  const url = 'http://waha:3000' + pathAndQuery;\n  return helpers.httpRequest({ method: 'GET', url, json: true });\n}\n\nasync function resolveLidToPn(lidJid) {\n  const lid = jidLocalPart(lidJid);\n  if (!lid) return null;\n  try {\n    const data = await wahaGet(\n      '/api/' + encodeURIComponent(session) + '/lids/' + encodeURIComponent(lid),\n    );\n    const pn = data && data.pn ? String(data.pn) : '';\n    return pn || null;\n  } catch (e) {\n    return null;\n  }\n}\n\nasync function resolveContact(contactId) {\n  if (!contactId) return null;\n  try {\n    const data = await wahaGet(\n      '/api/contacts?contactId=' +\n        encodeURIComponent(contactId) +\n        '&session=' +\n        encodeURIComponent(session),\n    );\n    if (!data) return null;\n    return Array.isArray(data) ? data[0] : data;\n  } catch (e) {\n    return null;\n  }\n}\n\nfunction pareceNumeroBrValido(digits) {\n  const d = String(digits || '').replace(/\\D/g, '');\n  if (!d) return false;\n  if (d.startsWith('55') && d.length >= 12 && d.length <= 13) return true;\n  if (d.length === 10 || d.length === 11) return true;\n  return false;\n}\n\nfunction normalizeTelefoneBrParaApi(digits) {\n  let d = String(digits || '').replace(/\\D/g, '');\n  if (!d) return '';\n\n  if (!d.startsWith('55') && d.length === 11) {\n    const d1 = d.charCodeAt(0) - 48;\n    const d2 = d.charCodeAt(1) - 48;\n    const ddd = d1 * 10 + d2;\n    if (ddd >= 11 && ddd <= 99) {\n      d = '55' + d;\n    }\n  }\n\n  if (d.startsWith('55') && d.length === 12 && d.charAt(4) !== '9') {\n    d = d.slice(0, 4) + '9' + d.slice(4);\n  }\n\n  return d;\n}\n\nreturn (async () => {\n  const key = payload._data && payload._data.key;\n  const cands = allJidCandidates(payload);\n  let phoneJid = pickContactPhoneJid(payload);\n  let fromRaw = String(payload.from || '').trim();\n  let chatId = toChatIdForWaha(phoneJid || fromRaw);\n  let telefone = toTelefoneDigits(phoneJid || fromRaw);\n\n  const lidJids = [...new Set(cands.filter(hasLid))];\n  const precisaResolver =\n    lidJids.length > 0 ||\n    hasLid(fromRaw) ||\n    hasLid(phoneJid) ||\n    (key && hasLid(key.participant)) ||\n    (key && hasLid(key.remoteJid)) ||\n    !pareceNumeroBrValido(telefone);\n\n  if (precisaResolver) {\n    let pnJid = null;\n    const tentarLids = [\n      ...lidJids,\n      fromRaw,\n      phoneJid,\n      key && key.participant,\n      key && key.remoteJid,\n      key && key.remoteJidAlt,\n    ];\n    for (const j of tentarLids) {\n      if (j && hasLid(j)) {\n        pnJid = await resolveLidToPn(j);\n        if (pnJid) break;\n      }\n    }\n\n    if (pnJid) {\n      phoneJid = pnJid;\n      chatId = toChatIdForWaha(pnJid);\n      telefone = toTelefoneDigits(pnJid);\n    } else {\n      let c = null;\n      for (const id of [...new Set(cands)]) {\n        c = await resolveContact(id);\n        if (c && (c.number || c.id)) break;\n      }\n\n      if (c) {\n        if (c.number) {\n          telefone = String(c.number).replace(/\\D/g, '');\n        } else if (c.id) {\n          telefone = toTelefoneDigits(c.id);\n        }\n        if (c.id) {\n          chatId = toChatIdForWaha(c.id);\n          phoneJid = c.id;\n        }\n      }\n    }\n  }\n\n  telefone = normalizeTelefoneBrParaApi(telefone);\n\n  const PHONE_TO_GESTANTE = {};\n  const gestante_id = PHONE_TO_GESTANTE[telefone] ? String(PHONE_TO_GESTANTE[telefone]) : '';\n\n  return [\n    {\n      json: {\n        message,\n        chatId,\n        telefone,\n        session,\n        gestante_id,\n        telefone_resolvido: pareceNumeroBrValido(telefone),\n      },\n    },\n  ];\n})();"
+      },
+      "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "name": "Preparar_WAHA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LARAVEL_APP_URL || '').replace(/\\/$/, '') + '/api/v1/n8n/whatsapp/mensagens/' + encodeURIComponent(String($json.telefone || '').replace(/\\D/g, '')) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.WAHA_WEBHOOK_SECRET || '' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ mensagem: String($json.message || ''), tipo: 'entrada' }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "f1a2b3c4-d5e6-4789-a012-345678901aaa",
+      "name": "Laravel_log_entrada",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        340,
+        0
+      ],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 65000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const prep = $('Mesclar_Laravel_gestante').first().json;\nlet base = String($env.SUPABASE_URL ?? '');\nif (base.endsWith('/')) base = base.slice(0, -1);\nconst url = base + '/rest/v1/gestrisk_sessoes?chat_id=eq.' + encodeURIComponent(prep.chatId) + '&select=chat_id,gestante_id,historico';\nconst key = $env.SUPABASE_SERVICE_ROLE_KEY;\nconst helpers = this.helpers;\nreturn (async () => {\n  let rows = [];\n  try {\n    const data = await helpers.httpRequest({\n      method: 'GET',\n      url,\n      headers: {\n        apikey: key,\n        Authorization: 'Bearer ' + key,\n        Accept: 'application/json',\n      },\n      json: true,\n    });\n    rows = Array.isArray(data) ? data : [];\n  } catch (e) {\n    rows = [];\n  }\n  return [{ json: { rows } }];\n})();"
+      },
+      "id": "b3c4d5e6-f7a8-9012-bcde-f23456789012",
+      "name": "Supabase_GET_sessao",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const prep = $('Mesclar_Laravel_gestante').first().json;\nconst msg = String(prep.message || '').trim();\nif (!msg) {\n  return [];\n}\n\nlet historicoCarregado = [];\nlet rowList = [];\nconst item0 = items[0];\nif (item0 && !item0.error && item0.json != null) {\n  const raw = item0.json;\n  rowList = raw.rows;\n  if (Array.isArray(rowList) && rowList[0] && Array.isArray(rowList[0].historico)) {\n    historicoCarregado = rowList[0].historico;\n  } else if (raw && typeof raw === 'object' && Array.isArray(raw.historico)) {\n    historicoCarregado = raw.historico;\n  }\n}\n\n\nlet gestante_id = String(prep.gestante_id || '');\nif (!gestante_id && Array.isArray(rowList) && rowList[0] && rowList[0].gestante_id) {\n  gestante_id = String(rowList[0].gestante_id);\n}\n\nconst prior = Array.isArray(historicoCarregado) ? historicoCarregado.slice(-24) : [];\nconst contents = prior.concat([{ role: 'user', parts: [{ text: msg }] }]);\n\nconst systemText = [\n  'Você é uma assistente de saúde especializada em gestantes. Tom acolhedor, claro e profissional.',\n  '',\n  'Você recebe o histórico deste chat no campo contents (turnos user/model). Use o contexto: não repita perguntas já respondidas (nome, sintomas).',\n  '',\n  'Tarefas:',\n  '1) Campo resposta_paciente — nesta ordem, em texto natural (adaptar se o histórico já trouxe nome ou sintomas):',\n  '   a) Introdução: 1 a 3 frases calorosas; diga que apoia gestantes neste canal e que isso NÃO substitui consulta presencial com a equipe de saúde.',\n  '   b) Nome: pergunte como prefere ser chamada (omitir só se o nome já estiver claro no histórico ou na mensagem atual).',\n  '   c) O que sente: convide a descrever sintomas, dúvidas ou o que a preocupa hoje (omitir só se já houver descrição suficiente).',\n  '2) Extrair dados clínicos da mensagem e do contexto quando existirem.',\n  '',\n  'Se houver risco ou emergência, priorize orientação segura (procurar urgência).',\n  '',\n  'IMPORTANTE: responda APENAS com JSON válido, sem texto fora do JSON.',\n  '',\n  'Formato:',\n  '{ \"resposta_paciente\": \"string\", \"intencao\": \"sintoma | medida | duvida | emergencia\", \"gravidade\": \"low | mid | high\", \"consulta\": { \"idade\": number|null, \"pressao_sistolica\": number|null, \"glicemia\": number|null, \"frequencia_cardiaca\": number|null, \"doppler_umbilical\": 0|1|2|null, \"percentil_peso\": number|null, \"volume_liquido\": 0|1|2|null, \"peso_gestante\": number|null, \"altura_gestante\": number|null } }',\n  '',\n  'O IMC não deve aparecer no JSON (é calculado no banco se houver peso/altura).',\n  '',\n  'Regras clínicas: pressão sistólica >= 160 → high; glicemia >= 180 → high; doppler == 2 → crítico.',\n].join('\\n');\n\nconst geminiBody = {\n  systemInstruction: { parts: [{ text: systemText }] },\n  contents,\n  generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },\n};\n\nreturn [\n  {\n    json: {\n      ...prep,\n      gestante_id,\n      geminiBody,\n      _historicoAntes: prior,\n    },\n  },\n];"
+      },
+      "id": "c3d4e5f6-a7b8-9012-cdef-123456789012",
+      "name": "Montar_prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/{{ $env.GEMINI_MODEL || 'gemini-3-flash-preview' }}:generateContent?key={{ $env.GEMINI_API_KEY }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.geminiBody) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "d4e5f6a7-b8c9-0123-def0-234567890123",
+      "name": "Gemini_API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        820,
+        0
+      ],
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const prep = $('Mesclar_Laravel_gestante').first().json;\nconst mp = $('Montar_prompt').first().json;\nconst prior = Array.isArray(mp._historicoAntes) ? mp._historicoAntes.slice() : [];\nconst g = items[0].json;\n\nlet text = g.candidates?.[0]?.content?.parts?.[0]?.text ?? '';\nconst fence = String.fromCharCode(96).repeat(3);\ntext = text.replace(new RegExp('^' + fence + 'json\\s*', 'i'), '').replace(new RegExp(fence + '\\s*$'), '').trim();\n\nlet ai;\ntry {\n  ai = JSON.parse(text);\n} catch (e) {\n  throw new Error('Gemini não retornou JSON válido: ' + String(text).slice(0, 800));\n}\n\nconst reply = String(\n  ai.resposta_paciente ||\n    'Recebemos sua mensagem. Em caso de dor forte, sangramento ou falta de ar, procure urgência.'\n);\n\nconst msg = String(prep.message || '').trim();\nlet h = prior;\nh.push({ role: 'user', parts: [{ text: msg }] });\nh.push({ role: 'model', parts: [{ text: reply }] });\nh = h.slice(-40);\n\nreturn [\n  {\n    json: {\n      resposta_paciente: reply,\n      telefone: prep.telefone,\n      chatId: prep.chatId,\n      session: prep.session,\n      gestante_id: mp.gestante_id || prep.gestante_id,\n      sessao_body: {\n        chat_id: prep.chatId,\n        gestante_id: mp.gestante_id || prep.gestante_id,\n        historico: h,\n      },\n    },\n  },\n];"
+      },
+      "id": "e5f6a7b8-c9d0-1234-ef01-345678901234",
+      "name": "Montar_resposta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LARAVEL_APP_URL || '').replace(/\\/$/, '') + '/api/v1/n8n/whatsapp/mensagens/' + encodeURIComponent(String($json.telefone || '').replace(/\\D/g, '')) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.WAHA_WEBHOOK_SECRET || '' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ mensagem: String($json.resposta_paciente || ''), tipo: 'saida' }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "f1a2b3c4-d5e6-4789-a012-34567890abbb",
+      "name": "Laravel_log_saida",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1180,
+        0
+      ],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 65000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SUPABASE_URL.replace(/\\/$/, '') + '/rest/v1/gestrisk_sessoes' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "={{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.SUPABASE_SERVICE_ROLE_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Montar_resposta').first().json.sessao_body) }}",
+        "options": {}
+      },
+      "id": "f6a7b8c9-d0e1-2345-f012-456789012345",
+      "name": "Supabase_save_sessao",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1360,
+        0
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://waha:3000/api/sendText",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ session: $('Montar_resposta').first().json.session, chatId: $('Montar_resposta').first().json.chatId, text: $('Montar_resposta').first().json.resposta_paciente }) }}",
+        "options": {}
+      },
+      "id": "b8c9d0e1-f2a3-4567-1234-678901234567",
+      "name": "WAHA_sendText",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        0
+      ],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true }) }}",
+        "options": {}
+      },
+      "id": "c9d0e1f2-a3b4-5678-2345-789012345678",
+      "name": "Respond_Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const prep = $('Preparar_WAHA').first().json;\nconst laravelItem = $('Laravel_log_entrada').first().json;\n\nfunction parseBody(raw) {\n  if (raw == null) return null;\n  let b = raw.body !== undefined ? raw.body : raw;\n  if (typeof b === 'string') {\n    try {\n      b = JSON.parse(b);\n    } catch (e) {\n      return null;\n    }\n  }\n  return b && typeof b === 'object' ? b : null;\n}\n\nconst status = laravelItem.statusCode ?? laravelItem.status;\nconst body = parseBody(laravelItem);\nconst ok = status === 201 || status === '201';\n\nlet gestante_id = '';\nif (ok && body && body.gestante_id != null && body.gestante_id !== '') {\n  gestante_id = String(body.gestante_id);\n}\n\nif (!gestante_id && prep.gestante_id) {\n  gestante_id = String(prep.gestante_id);\n}\n\nconst fallback = $env.GESTRISK_DEFAULT_GESTANTE_ID || '';\nif (!gestante_id && fallback) {\n  gestante_id = String(fallback);\n}\n\nreturn [\n  {\n    json: {\n      ...prep,\n      gestante_id,\n      laravel_gestante_id: ok && body ? body.gestante_id : null,\n    },\n  },\n];"
+      },
+      "id": "8464d689-7106-4375-8386-ee877f84fd6e",
+      "name": "Mesclar_Laravel_gestante",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        410,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook_WAHA": {
+      "main": [
+        [
+          {
+            "node": "Preparar_WAHA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar_WAHA": {
+      "main": [
+        [
+          {
+            "node": "Laravel_log_entrada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Laravel_log_entrada": {
+      "main": [
+        [
+          {
+            "node": "Mesclar_Laravel_gestante",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase_GET_sessao": {
+      "main": [
+        [
+          {
+            "node": "Montar_prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar_prompt": {
+      "main": [
+        [
+          {
+            "node": "Gemini_API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini_API": {
+      "main": [
+        [
+          {
+            "node": "Montar_resposta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar_resposta": {
+      "main": [
+        [
+          {
+            "node": "Laravel_log_saida",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Laravel_log_saida": {
+      "main": [
+        [
+          {
+            "node": "Supabase_save_sessao",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase_save_sessao": {
+      "main": [
+        [
+          {
+            "node": "WAHA_sendText",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WAHA_sendText": {
+      "main": [
+        [
+          {
+            "node": "Respond_Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mesclar_Laravel_gestante": {
+      "main": [
+        [
+          {
+            "node": "Supabase_GET_sessao",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
