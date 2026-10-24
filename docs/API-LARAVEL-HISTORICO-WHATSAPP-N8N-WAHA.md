@@ -139,13 +139,19 @@ Ambos gravam o mesmo registro e retornam o mesmo formato de resposta em sucesso.
 
 ## Fluxo GestRisk no n8n (import `GestRisk-WAHA-Gemini-Supabase.json`)
 
-O workflow inclui nós **Laravel_log_entrada** e **Laravel_log_saida** que chamam `POST /api/gestante-whatsapp` com corpo JSON `{ telefone, mensagem, tipo }` (`entrada` ou `saida`), alinhado ao endpoint legado documentado acima.
+Topologia: **Webhook_WAHA → Preparar_WAHA → Laravel_log_entrada → Mesclar_Laravel_gestante → Supabase_GET_sessao → IF_continuar_gemini → (Montar_prompt → Gemini_API → Montar_resposta | Resposta_encerramento) → Laravel_log_saida → Supabase_save_sessao → WAHA_sendText → Respond_Webhook**.
+
+Os nós **Laravel_log_*** chamam `POST /api/v1/n8n/whatsapp/mensagens/{telefone}` com `{ mensagem, tipo }` (`entrada` ou `saida`).
 
 **Variáveis no `.env` do Docker Compose (serviço n8n):**
 
 | Variável | Descrição |
 |----------|-----------|
-| `LARAVEL_APP_URL` | URL base do Laravel **sem** barra final (ex.: `http://host.docker.internal:8000` quando o Laravel corre no host e o n8n está em Docker no Windows/Mac). |
-| `WAHA_WEBHOOK_SECRET` | Opcional; se preenchido no Laravel (`WAHA_WEBHOOK_SECRET`), deve ser o mesmo aqui — enviado no header `X-Webhook-Secret`. |
+| `LARAVEL_APP_URL` | URL base do Laravel **sem** barra final (ex.: `http://host.docker.internal:8000`). |
+| `WAHA_WEBHOOK_SECRET` | Mesmo valor do Laravel — header `X-Webhook-Secret`. |
+| `GEMINI_API_KEY` / `GEMINI_MODEL` | Modelo recomendado: `gemini-flash-latest`. |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Projeto Supabase + service role. |
 
-Após alterar o `.env`: `docker compose up -d n8n`. Os nós Laravel usam `continueOnFail: true` para o fluxo WhatsApp/Gemini continuar mesmo se a API Laravel falhar.
+**SQL no Supabase:** `003_gestrisk_sessoes.sql` + `004_gestrisk_sessoes_consentimento.sql` (status, timeout, consentimento, memória, cadastro LGPD).
+
+Após alterar o `.env`: `docker compose up -d n8n`. Os nós Laravel usam `continueOnFail: true`.

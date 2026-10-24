@@ -110,16 +110,17 @@ Arquivo pronto para importar: `workflows/GestRisk-WAHA-Gemini-Supabase.json`.
 | `SUPABASE_URL` | URL do projeto, ex. `https://xxxx.supabase.co` |
 | `SUPABASE_SERVICE_ROLE_KEY` | **Service role** do Supabase (só servidor; nunca no app público). |
 | `GESTRISK_DEFAULT_GESTANTE_ID` | `gestante_id` usado quando o telefone da paciente não estiver no mapa do nó Code (ex. `GEST-001`). |
-| `LARAVEL_APP_URL` | Base do backend Laravel **sem** barra final (ex. `http://host.docker.internal:8000` com n8n no Docker e Laravel no PC). Os nós **Laravel_log_*** fazem `POST /api/gestante-whatsapp` com `{ telefone, mensagem, tipo }`. |
+| `LARAVEL_APP_URL` | Base do backend Laravel **sem** barra final (ex. `http://host.docker.internal:8000` com n8n no Docker e Laravel no PC). Os nós **Laravel_log_*** usam `POST /api/v1/n8n/whatsapp/mensagens/{telefone}`. |
 | `WAHA_WEBHOOK_SECRET` | Opcional; se definido no Laravel, use o mesmo valor (header `X-Webhook-Secret`). |
+| `GEMINI_MODEL` | Padrão recomendado: `gemini-flash-latest`. |
 
 Depois de editar o `.env`: `docker compose up -d n8n`.
 
 ### Importar no n8n
 
-1. **Workflows** → menu **⋯** → **Import from File** → escolha `GestRisk-WAHA-Gemini-Supabase.json`.
-2. Abra o workflow e **Activate**.
-3. Webhook de produção: `http://localhost:5678/webhook/gestrisk-whatsapp` (ajuste host se o n8n estiver em outro lugar).
+1. Importe `workflows/GestRisk-WAHA-Gemini-Supabase.json` (ou rode `node scripts/build-gestrisk-workflow.js` e reimporte).
+2. Publique/ative o workflow.
+3. Webhook de produção: `http://localhost:5678/webhook/gestrisk-whatsapp`.
 
 ### Apontar o WAHA para este fluxo
 
@@ -133,17 +134,40 @@ No `.env`, defina:
 
 No nó **Preparar_WAHA**, edite o objeto `PHONE_TO_GESTANTE` (dígitos do WhatsApp, sem `+`, ex. `5521987654321`) para o `gestante_id` que existe na tabela `gestantes`.
 
-### Tabela Supabase de sessão (obrigatória para o fluxo atual)
+### Tabelas Supabase (obrigatórias)
 
-Crie a tabela executando `supabase/migrations/003_gestrisk_sessoes.sql` no **SQL Editor** do Supabase.
+**Dev local:** `npx supabase start` + `npx supabase db reset` neste repositório.  
+No `.env`: `SUPABASE_URL=http://host.docker.internal:54321` e `SUPABASE_SERVICE_ROLE_KEY` de `npx supabase status -o env`. Studio: http://127.0.0.1:54323
 
-- **`gestrisk_sessoes`**: `chat_id` (PK), `gestante_id`, `historico` (JSON com turnos user/model para o Gemini), `updated_at`.
+No **SQL Editor** (cloud) ou via reset local, execute nesta ordem:
 
-O n8n **lê** o histórico por `chat_id`, chama o Gemini e **grava** de volta com upsert (`Prefer: resolution=merge-duplicates`).
+1. `supabase/migrations/003_gestrisk_sessoes.sql`
+2. `supabase/migrations/004_gestrisk_sessoes_consentimento.sql`
+3. `supabase/migrations/005_gestrisk_grants.sql`
+4. `supabase/migrations/006_gestrisk_document_chunks_rag.sql` (opcional — pgvector futuro)
+
+### RAG WhatsApp (Laravel)
+
+Documentação completa: [`docs/RAG-WHATSAPP.md`](docs/RAG-WHATSAPP.md).
+
+- Endpoint: `POST /api/v1/n8n/whatsapp/rag/{telefone}`
+- Indexar documento: `php artisan whatsapp:rag-index {gestante_id} --texto="..."`
+- Nó n8n: `Laravel_RAG` (antes do `Montar_prompt`)
+
+
+**`gestrisk_sessoes`:** `chat_id`, `gestante_id`, `historico`, `status` (`open`|`closed_user`|`closed_timeout`), `consentimento` (`pending`|`accepted`|`declined`), `timeout_minutos` (default 1440), `memoria` (jsonb), timestamps.
+
+**`gestrisk_gestantes_cadastro`:** telefone + consentimento LGPD (upsert quando a gestante aceita).
+
+O fluxo: lê sessão → se consentimento `declined` ou timeout na hora, encerra sem Gemini → senão Gemini → grava sessão (histórico + memória) → WAHA `sendText`. Laravel só registra entrada/saída.
+
+### Contrato JSON do Gemini (`Montar_prompt`)
+
+Campos principais: `resposta_paciente`, `intencao`, `gravidade`, `consentimento_resposta` (`sim`|`nao`|null), `encerrar_ticket`, `memoria_patch`, `consulta`. Respostas curtas; sem alarmismo (“emergência”, “urgente”, …); sem prescrição de medicamentos.
 
 ### Modelo Gemini
 
-O HTTP Request usa `gemini-3-flash-preview`. Se a API retornar 404, altere o nó **Gemini_API** para um modelo disponível na sua conta (ex. `gemini-2.0-flash`).
+Defina `GEMINI_MODEL=gemini-flash-latest` no `.env` (validado com a chave atual).
 
 ## Credenciais externas no n8n
 

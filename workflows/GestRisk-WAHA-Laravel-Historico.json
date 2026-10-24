@@ -1,0 +1,154 @@
+{
+  "name": "GestRisk — WAHA → Laravel (histórico)",
+  "active": true,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "gestrisk-whatsapp",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "wh-gestrisk-laravel-01",
+      "name": "Webhook_WAHA",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "gestrisk-waha-laravel-historico"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const root = items[0].json;\nconst body = root.body ?? root;\nconst event = body.event ?? root.event;\nconst payload = body.payload ?? root.payload ?? {};\n\nif (event !== 'message') {\n  return [{ json: { skip: true, reason: 'not_message', event: event || null } }];\n}\nif (payload.fromMe === true) {\n  return [{ json: { skip: true, reason: 'fromMe' } }];\n}\n\nconst message = String(payload.body ?? '').trim();\nif (!message) {\n  return [{ json: { skip: true, reason: 'empty_body' } }];\n}\n\nfunction jidLocalPart(jid) {\n  const s = String(jid || '');\n  const i = s.indexOf('@');\n  return i === -1 ? s : s.slice(0, i);\n}\n\nfunction hasLid(j) {\n  return j && String(j).includes('@lid');\n}\n\nfunction isPhoneJid(j) {\n  if (!j || hasLid(j)) return false;\n  const s = String(j);\n  return s.includes('@c.us') || s.includes('@s.whatsapp.net');\n}\n\nfunction allJidCandidates(p) {\n  const key = (p._data && p._data.key) || {};\n  return [key.remoteJidAlt, key.remoteJid, key.participant, p.from, p.chatId]\n    .map((x) => (x == null ? '' : String(x).trim()))\n    .filter(Boolean);\n}\n\nfunction pickContactPhoneJid(p) {\n  const cands = allJidCandidates(p);\n  for (const j of cands) {\n    if (isPhoneJid(j)) return j;\n  }\n  for (const j of cands) {\n    if (!hasLid(j)) return j;\n  }\n  return cands[0] || '';\n}\n\nfunction toTelefoneDigits(jidOrDigits) {\n  return jidLocalPart(jidOrDigits).replace(/\\D/g, '');\n}\n\nfunction normalizeTelefoneBrParaApi(digits) {\n  let d = String(digits || '').replace(/\\D/g, '');\n  if (!d) return '';\n  if (!d.startsWith('55') && d.length === 11) {\n    const ddd = Number(d.slice(0, 2));\n    if (ddd >= 11 && ddd <= 99) d = '55' + d;\n  }\n  if (d.startsWith('55') && d.length === 12 && d.charAt(4) !== '9') {\n    d = d.slice(0, 4) + '9' + d.slice(4);\n  }\n  return d;\n}\n\nconst session = body.session || root.session || 'default';\nconst phoneJid = pickContactPhoneJid(payload);\nconst fromRaw = String(payload.from || '').trim();\nlet telefone = normalizeTelefoneBrParaApi(toTelefoneDigits(phoneJid || fromRaw));\n\nif (!telefone || telefone.length < 10 || telefone.length > 16) {\n  return [{ json: { skip: true, reason: 'telefone_invalido', telefone: telefone || null, message } }];\n}\n\nreturn [{\n  json: {\n    skip: false,\n    message,\n    telefone,\n    session,\n    chatId: telefone + '@c.us',\n  },\n}];"
+      },
+      "id": "code-preparar-01",
+      "name": "Preparar_telefone",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [220, 0]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-skip",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-processar-01",
+      "name": "IF_processar",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [440, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LARAVEL_APP_URL || 'http://host.docker.internal:8000').replace(/\\/$/, '') + '/api/v1/n8n/whatsapp/mensagens/' + encodeURIComponent(String($json.telefone || '').replace(/\\D/g, '')) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.WAHA_WEBHOOK_SECRET || '' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ mensagem: String($json.message || ''), tipo: 'entrada' }) }}",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "neverError": true,
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "http-laravel-entrada-01",
+      "name": "Laravel_log_entrada",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, -80],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, logged: true, statusCode: $json.statusCode ?? $json.status ?? null, gestante_id: ($json.body && $json.body.gestante_id) ?? null }) }}",
+        "options": {}
+      },
+      "id": "respond-ok-01",
+      "name": "Respond_OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [960, -80]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ ok: true, skipped: true, reason: $json.reason || 'ignored' }) }}",
+        "options": {}
+      },
+      "id": "respond-skip-01",
+      "name": "Respond_Skip",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [700, 120]
+    }
+  ],
+  "connections": {
+    "Webhook_WAHA": {
+      "main": [[{ "node": "Preparar_telefone", "type": "main", "index": 0 }]]
+    },
+    "Preparar_telefone": {
+      "main": [[{ "node": "IF_processar", "type": "main", "index": 0 }]]
+    },
+    "IF_processar": {
+      "main": [
+        [{ "node": "Laravel_log_entrada", "type": "main", "index": 0 }],
+        [{ "node": "Respond_Skip", "type": "main", "index": 0 }]
+      ]
+    },
+    "Laravel_log_entrada": {
+      "main": [[{ "node": "Respond_OK", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}

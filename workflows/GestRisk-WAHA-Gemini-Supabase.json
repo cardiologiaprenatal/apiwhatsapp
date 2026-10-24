@@ -1,8 +1,5 @@
 {
   "id": "a8f7e6d5-c4b3-4210-9876-543210fedcba",
-  "meta": {
-    "templateCredsSetupCompleted": true
-  },
   "name": "GestRisk — WAHA → Gemini → Sessão",
   "active": true,
   "nodes": [
@@ -33,7 +30,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        200,
+        208,
         0
       ]
     },
@@ -62,13 +59,13 @@
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ mensagem: String($json.message || ''), tipo: 'entrada' }) }}",
         "options": {
-          "timeout": 30000,
           "response": {
             "response": {
-              "neverError": true,
-              "fullResponse": true
+              "fullResponse": true,
+              "neverError": true
             }
-          }
+          },
+          "timeout": 30000
         }
       },
       "id": "f1a2b3c4-d5e6-4789-a012-345678901aaa",
@@ -76,46 +73,175 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        340,
-        0
+        432,
+        112
       ],
-      "continueOnFail": true,
       "retryOnFail": true,
       "maxTries": 3,
-      "waitBetweenTries": 65000
+      "waitBetweenTries": 2000,
+      "continueOnFail": true
     },
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const prep = $('Mesclar_Laravel_gestante').first().json;\nlet base = String($env.SUPABASE_URL ?? '');\nif (base.endsWith('/')) base = base.slice(0, -1);\nconst url = base + '/rest/v1/gestrisk_sessoes?chat_id=eq.' + encodeURIComponent(prep.chatId) + '&select=chat_id,gestante_id,historico';\nconst key = $env.SUPABASE_SERVICE_ROLE_KEY;\nconst helpers = this.helpers;\nreturn (async () => {\n  let rows = [];\n  try {\n    const data = await helpers.httpRequest({\n      method: 'GET',\n      url,\n      headers: {\n        apikey: key,\n        Authorization: 'Bearer ' + key,\n        Accept: 'application/json',\n      },\n      json: true,\n    });\n    rows = Array.isArray(data) ? data : [];\n  } catch (e) {\n    rows = [];\n  }\n  return [{ json: { rows } }];\n})();"
+        "jsCode": "const prep = $('Preparar_WAHA').first().json;\nconst laravelItem = $('Laravel_log_entrada').first().json;\n\nfunction parseBody(raw) {\n  if (raw == null) return null;\n  let b = raw.body !== undefined ? raw.body : raw;\n  if (typeof b === 'string') {\n    try {\n      b = JSON.parse(b);\n    } catch (e) {\n      return null;\n    }\n  }\n  return b && typeof b === 'object' ? b : null;\n}\n\nconst status = laravelItem.statusCode ?? laravelItem.status;\nconst body = parseBody(laravelItem);\nconst ok = status === 201 || status === '201';\n\nlet gestante_id = '';\nif (ok && body && body.gestante_id != null && body.gestante_id !== '') {\n  gestante_id = String(body.gestante_id);\n}\n\nif (!gestante_id && prep.gestante_id) {\n  gestante_id = String(prep.gestante_id);\n}\n\nconst fallback = $env.GESTRISK_DEFAULT_GESTANTE_ID || '';\nif (!gestante_id && fallback) {\n  gestante_id = String(fallback);\n}\n\nconst respostaPronta = ok && body ? String(body.resposta_pronta || '').trim() : '';\nconst fluxo_respondido = respostaPronta.length > 0;\nconst pular_ia = fluxo_respondido || (ok && body && body.pular_ia === true);\n\nreturn [\n  {\n    json: {\n      ...prep,\n      gestante_id,\n      laravel_gestante_id: ok && body ? body.gestante_id : null,\n      fluxo_respondido,\n      pular_ia,\n      fluxo_estado: ok && body ? body.fluxo_estado || null : null,\n    },\n  },\n];"
+      },
+      "id": "8464d689-7106-4375-8386-ee877f84fd6e",
+      "name": "Mesclar_Laravel_gestante",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        -304
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-pular-ia-laravel",
+              "leftValue": "={{ $json.pular_ia }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-pular-ia-laravel-01",
+      "name": "IF_pular_ia_laravel",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        520,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const prep = $('Mesclar_Laravel_gestante').first().json;\nlet base = String($env.SUPABASE_URL ?? '');\nif (base.endsWith('/')) base = base.slice(0, -1);\nconst select =\n  'chat_id,gestante_id,historico,status,consentimento,consentimento_em,fechado_em,ultima_interacao_em,timeout_minutos,memoria';\nconst url =\n  base +\n  '/rest/v1/gestrisk_sessoes?chat_id=eq.' +\n  encodeURIComponent(prep.chatId) +\n  '&select=' +\n  select;\nconst key = $env.SUPABASE_SERVICE_ROLE_KEY;\nconst helpers = this.helpers;\n\nreturn (async () => {\n  let rows = [];\n  try {\n    const data = await helpers.httpRequest({\n      method: 'GET',\n      url,\n      headers: {\n        apikey: key,\n        Authorization: 'Bearer ' + key,\n        Accept: 'application/json',\n      },\n      json: true,\n    });\n    rows = Array.isArray(data) ? data : [];\n  } catch (e) {\n    rows = [];\n  }\n\n  const row = rows[0] || null;\n  let status = row && row.status ? String(row.status) : 'open';\n  let consentimento = row && row.consentimento ? String(row.consentimento) : 'pending';\n  const timeoutMin = Number(row && row.timeout_minutos != null ? row.timeout_minutos : 1440) || 1440;\n  const ultima = row && row.ultima_interacao_em ? new Date(row.ultima_interacao_em) : null;\n  const memoria =\n    row && row.memoria && typeof row.memoria === 'object' && !Array.isArray(row.memoria)\n      ? row.memoria\n      : {};\n\n  let motivo_encerramento = null;\n  let mensagem_encerramento = null;\n  let timedOut = false;\n\n  if (status === 'open' && ultima && !Number.isNaN(ultima.getTime())) {\n    const limiteMs = timeoutMin * 60 * 1000;\n    if (Date.now() - ultima.getTime() > limiteMs) {\n      timedOut = true;\n      status = 'open';\n    }\n  }\n\n  // Ticket já fechado: a nova mensagem retoma o atendimento (exceto consentimento recusado).\n  if (status === 'closed_user' || status === 'closed_timeout') {\n    status = 'open';\n  }\n\n  if (!motivo_encerramento && consentimento === 'declined') {\n    motivo_encerramento = 'consentimento_declined';\n    mensagem_encerramento =\n      'Tudo bem. Sem o seu consentimento não seguimos com o atendimento por aqui. Cuide-se e conte com a equipe de saúde do seu acompanhamento presencial.';\n  }\n\n  const continuar_gemini = !motivo_encerramento && !prep.fluxo_respondido && !prep.pular_ia;\n\n  return [\n    {\n      json: {\n        rows,\n        row,\n        status,\n        consentimento,\n        timedOut,\n        timeout_minutos: timeoutMin,\n        memoria,\n        continuar_gemini,\n        motivo_encerramento,\n        mensagem_encerramento,\n      },\n    },\n  ];\n})();"
       },
       "id": "b3c4d5e6-f7a8-9012-bcde-f23456789012",
       "name": "Supabase_GET_sessao",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        480,
-        0
+        656,
+        -320
       ]
     },
     {
       "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cond-continuar-gemini",
+              "leftValue": "={{ $json.continuar_gemini }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-continuar-gemini-01",
+      "name": "IF_continuar_gemini",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        820,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.LARAVEL_APP_URL || '').replace(/\\/$/, '') + '/api/v1/n8n/whatsapp/rag/' + encodeURIComponent(String($('Mesclar_Laravel_gestante').first().json.telefone || '').replace(/\\D/g, '')) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Webhook-Secret",
+              "value": "={{ $env.WAHA_WEBHOOK_SECRET || '' }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ mensagem: String($('Mesclar_Laravel_gestante').first().json.message || ''), top_k: 6 }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "laravel-rag-01",
+      "name": "Laravel_RAG",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        -400
+      ],
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const prep = $('Mesclar_Laravel_gestante').first().json;\nconst msg = String(prep.message || '').trim();\nif (!msg) {\n  return [];\n}\n\nlet historicoCarregado = [];\nlet rowList = [];\nconst item0 = items[0];\nif (item0 && !item0.error && item0.json != null) {\n  const raw = item0.json;\n  rowList = raw.rows;\n  if (Array.isArray(rowList) && rowList[0] && Array.isArray(rowList[0].historico)) {\n    historicoCarregado = rowList[0].historico;\n  } else if (raw && typeof raw === 'object' && Array.isArray(raw.historico)) {\n    historicoCarregado = raw.historico;\n  }\n}\n\n\nlet gestante_id = String(prep.gestante_id || '');\nif (!gestante_id && Array.isArray(rowList) && rowList[0] && rowList[0].gestante_id) {\n  gestante_id = String(rowList[0].gestante_id);\n}\n\nconst prior = Array.isArray(historicoCarregado) ? historicoCarregado.slice(-24) : [];\nconst contents = prior.concat([{ role: 'user', parts: [{ text: msg }] }]);\n\nconst systemText = [\n  'Você é uma assistente de saúde especializada em gestantes. Tom acolhedor, claro e profissional.',\n  '',\n  'Você recebe o histórico deste chat no campo contents (turnos user/model). Use o contexto: não repita perguntas já respondidas (nome, sintomas).',\n  '',\n  'Tarefas:',\n  '1) Campo resposta_paciente — nesta ordem, em texto natural (adaptar se o histórico já trouxe nome ou sintomas):',\n  '   a) Introdução: 1 a 3 frases calorosas; diga que apoia gestantes neste canal e que isso NÃO substitui consulta presencial com a equipe de saúde.',\n  '   b) Nome: pergunte como prefere ser chamada (omitir só se o nome já estiver claro no histórico ou na mensagem atual).',\n  '   c) O que sente: convide a descrever sintomas, dúvidas ou o que a preocupa hoje (omitir só se já houver descrição suficiente).',\n  '2) Extrair dados clínicos da mensagem e do contexto quando existirem.',\n  '',\n  'Se houver risco ou emergência, priorize orientação segura (procurar urgência).',\n  '',\n  'IMPORTANTE: responda APENAS com JSON válido, sem texto fora do JSON.',\n  '',\n  'Formato:',\n  '{ \"resposta_paciente\": \"string\", \"intencao\": \"sintoma | medida | duvida | emergencia\", \"gravidade\": \"low | mid | high\", \"consulta\": { \"idade\": number|null, \"pressao_sistolica\": number|null, \"glicemia\": number|null, \"frequencia_cardiaca\": number|null, \"doppler_umbilical\": 0|1|2|null, \"percentil_peso\": number|null, \"volume_liquido\": 0|1|2|null, \"peso_gestante\": number|null, \"altura_gestante\": number|null } }',\n  '',\n  'O IMC não deve aparecer no JSON (é calculado no banco se houver peso/altura).',\n  '',\n  'Regras clínicas: pressão sistólica >= 160 → high; glicemia >= 180 → high; doppler == 2 → crítico.',\n].join('\\n');\n\nconst geminiBody = {\n  systemInstruction: { parts: [{ text: systemText }] },\n  contents,\n  generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },\n};\n\nreturn [\n  {\n    json: {\n      ...prep,\n      gestante_id,\n      geminiBody,\n      _historicoAntes: prior,\n    },\n  },\n];"
+        "jsCode": "const prep = $('Mesclar_Laravel_gestante').first().json;\nconst sess = $('Supabase_GET_sessao').first().json;\nconst msg = String(prep.message || '').trim();\nif (!msg) {\n  return [];\n}\n\nlet historicoCarregado = [];\nlet rowList = Array.isArray(sess.rows) ? sess.rows : [];\nif (Array.isArray(rowList) && rowList[0] && Array.isArray(rowList[0].historico)) {\n  historicoCarregado = rowList[0].historico;\n}\n\nlet gestante_id = String(prep.gestante_id || '');\nif (!gestante_id && Array.isArray(rowList) && rowList[0] && rowList[0].gestante_id) {\n  gestante_id = String(rowList[0].gestante_id);\n}\n\nconst memoria =\n  sess.memoria && typeof sess.memoria === 'object' ? sess.memoria : {};\nconst consentimento = String(sess.consentimento || 'pending');\nconst semana =\n  memoria.semana_gestacional != null ? String(memoria.semana_gestacional) : '';\n\n// RAG Laravel (prontuário + documentos indexados)\nlet ragTexto = '';\nlet ragFound = false;\nlet ragIntencao = '';\ntry {\n  const ragItem = $('Laravel_RAG').first().json;\n  let rb = ragItem && (ragItem.body !== undefined ? ragItem.body : ragItem);\n  if (typeof rb === 'string') {\n    try { rb = JSON.parse(rb); } catch (e) { rb = null; }\n  }\n  if (rb && typeof rb === 'object') {\n    ragFound = !!rb.found;\n    ragIntencao = String(rb.intencao || '');\n    ragTexto = String(rb.contexto_texto || '');\n    if (!gestante_id && rb.gestante_id != null) {\n      gestante_id = String(rb.gestante_id);\n    }\n  }\n} catch (e) {\n  ragTexto = '';\n}\n\nconst usarProntuario = ragIntencao === 'exames_consultas';\nconst regrasRag = usarProntuario\n  ? [\n      'Regras do RAG: use só o que estiver nesses trechos; se não houver dado, diga que não há registro no prontuário; não invente exames, consultas, datas, horários, locais, profissionais ou resultados.',\n      'Nunca interprete exames, faça diagnóstico, recomende medicamentos ou classifique sintomas como normais/graves.',\n      'Não complete informações ausentes com conhecimento médico geral. Não altere dados das APIs.',\n    ].join('\\n')\n  : '';\n\nconst prior = Array.isArray(historicoCarregado) ? historicoCarregado.slice(-24) : [];\nconst contents = prior.concat([{ role: 'user', parts: [{ text: msg }] }]);\n\nconst systemText = [\n  'Você é uma assistente de saúde para gestantes, com postura de obstetra experiente: acolhedora, clara e objetiva.',\n  'Fale em português do Brasil, linguagem simples. Evite termos técnicos sem explicação curta.',\n  'Respostas CURTAS: 2 a 5 frases no campo resposta_paciente. Sem listas longas.',\n  'Use o histórico em contents, a memória e o contexto abaixo. NÃO repita perguntas já respondidas (nome, sintomas, consentimento).',\n  '',\n  'Memória atual (JSON): ' + JSON.stringify(memoria),\n  'Consentimento LGPD atual: ' + consentimento,\n  semana ? 'Semana gestacional conhecida: ' + semana + '. Adapte o tom à fase da gravidez.' : 'Semana gestacional ainda desconhecida.',\n  '',\n  usarProntuario ? 'RAG / prontuário (fonte Laravel; found=' + String(ragFound) + '):' : 'Conversa (sem prontuário nesta mensagem):',\n  ragTexto || (usarProntuario ? 'Sem trechos RAG disponíveis nesta mensagem.' : 'Converse de forma acolhedora. Não consulte o prontuário nesta mensagem.'),\n  regrasRag,\n  '',\n  'Regras de segurança:',\n  '- Nunca prescreva medicamentos, doses ou condutas invasivas.',\n  '- Reforce, com naturalidade, que este canal NÃO substitui consulta presencial com a equipe de saúde.',\n  '- NÃO use no texto ao paciente palavras alarmistas como: emergência, emergencial, urgente, urgência, agora (no sentido de alarme), imediato, correr.',\n  '- Se a situação parecer grave (classifique gravidade=high), oriente com calma a procurar a unidade de saúde / equipe de referência, sem alarmismo.',\n  '',\n  'Consentimento (obrigatório na 1ª interação se consentimento=pending):',\n  '- Explique em 1–2 frases que podemos guardar dados do atendimento para acompanhar melhor.',\n  '- Peça resposta clara: SIM ou NÃO.',\n  '- Se a mensagem atual já for sim/não, preencha consentimento_resposta e siga.',\n  '',\n  'Encerrar ticket: se a pessoa pedir para finalizar/encerrar/parar o atendimento, encerrar_ticket=true e uma despedida curta.',\n  '',\n  'Extraia dados clínicos e de perfil quando existirem na mensagem ou no contexto (memoria_patch + consulta).',\n  'O IMC NÃO deve aparecer no JSON (é calculado no banco se houver peso/altura).',\n  '',\n  'Classificação interna (não verbalizar alarmismo):',\n  '- pressao_sistolica >= 160 → gravidade high',\n  '- glicemia >= 180 → gravidade high',\n  '- doppler_umbilical == 2 → gravidade high',\n  '',\n  'IMPORTANTE: responda APENAS com JSON válido, sem markdown e sem texto fora do JSON.',\n  '',\n  'Formato:',\n  '{',\n  '  \"resposta_paciente\": \"string\",',\n  '  \"intencao\": \"sintoma|medida|duvida|saudacao|consentimento|encerrar|outro\",',\n  '  \"gravidade\": \"low|mid|high\",',\n  '  \"consentimento_resposta\": \"sim|nao|null\",',\n  '  \"encerrar_ticket\": false,',\n  '  \"memoria_patch\": {',\n  '    \"nome\": null,',\n  '    \"semana_gestacional\": null,',\n  '    \"sintomas\": [],',\n  '    \"preferencias\": {},',\n  '    \"exames\": {},',\n  '    \"clinico\": {',\n  '      \"pressao_sistolica\": null,',\n  '      \"glicemia\": null,',\n  '      \"frequencia_cardiaca\": null,',\n  '      \"febre\": null,',\n  '      \"doppler_umbilical\": null,',\n  '      \"percentil_peso\": null,',\n  '      \"volume_liquido\": null,',\n  '      \"peso_gestante\": null,',\n  '      \"altura_gestante\": null',\n  '    }',\n  '  },',\n  '  \"consulta\": {',\n  '    \"idade\": null,',\n  '    \"pressao_sistolica\": null,',\n  '    \"glicemia\": null,',\n  '    \"frequencia_cardiaca\": null,',\n  '    \"doppler_umbilical\": null,',\n  '    \"percentil_peso\": null,',\n  '    \"volume_liquido\": null,',\n  '    \"peso_gestante\": null,',\n  '    \"altura_gestante\": null',\n  '  }',\n  '}',\n].join('\\n');\n\nconst geminiBody = {\n  systemInstruction: { parts: [{ text: systemText }] },\n  contents,\n  generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },\n};\n\nreturn [\n  {\n    json: {\n      ...prep,\n      gestante_id,\n      consentimento,\n      memoria,\n      status: sess.status || 'open',\n      timeout_minutos: sess.timeout_minutos || 1440,\n      rag_found: ragFound,\n      geminiBody,\n      _historicoAntes: prior,\n    },\n  },\n];"
       },
       "id": "c3d4e5f6-a7b8-9012-cdef-123456789012",
       "name": "Montar_prompt",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        640,
-        0
+        1140,
+        -400
       ]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "=https://generativelanguage.googleapis.com/v1beta/models/{{ $env.GEMINI_MODEL || 'gemini-3-flash-preview' }}:generateContent?key={{ $env.GEMINI_API_KEY }}",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/{{ $env.GEMINI_MODEL || 'gemini-flash-latest' }}:generateContent?key={{ $env.GEMINI_API_KEY }}",
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json.geminiBody) }}",
@@ -128,8 +254,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        820,
-        0
+        1320,
+        -400
       ],
       "retryOnFail": true,
       "maxTries": 5,
@@ -138,15 +264,29 @@
     {
       "parameters": {
         "mode": "runOnceForAllItems",
-        "jsCode": "const prep = $('Mesclar_Laravel_gestante').first().json;\nconst mp = $('Montar_prompt').first().json;\nconst prior = Array.isArray(mp._historicoAntes) ? mp._historicoAntes.slice() : [];\nconst g = items[0].json;\n\nlet text = g.candidates?.[0]?.content?.parts?.[0]?.text ?? '';\nconst fence = String.fromCharCode(96).repeat(3);\ntext = text.replace(new RegExp('^' + fence + 'json\\s*', 'i'), '').replace(new RegExp(fence + '\\s*$'), '').trim();\n\nlet ai;\ntry {\n  ai = JSON.parse(text);\n} catch (e) {\n  throw new Error('Gemini não retornou JSON válido: ' + String(text).slice(0, 800));\n}\n\nconst reply = String(\n  ai.resposta_paciente ||\n    'Recebemos sua mensagem. Em caso de dor forte, sangramento ou falta de ar, procure urgência.'\n);\n\nconst msg = String(prep.message || '').trim();\nlet h = prior;\nh.push({ role: 'user', parts: [{ text: msg }] });\nh.push({ role: 'model', parts: [{ text: reply }] });\nh = h.slice(-40);\n\nreturn [\n  {\n    json: {\n      resposta_paciente: reply,\n      telefone: prep.telefone,\n      chatId: prep.chatId,\n      session: prep.session,\n      gestante_id: mp.gestante_id || prep.gestante_id,\n      sessao_body: {\n        chat_id: prep.chatId,\n        gestante_id: mp.gestante_id || prep.gestante_id,\n        historico: h,\n      },\n    },\n  },\n];"
+        "jsCode": "const prep = $('Mesclar_Laravel_gestante').first().json;\nconst mp = $('Montar_prompt').first().json;\nconst prior = Array.isArray(mp._historicoAntes) ? mp._historicoAntes.slice() : [];\nconst g = items[0].json;\nconst helpers = this.helpers;\n\nreturn (async () => {\n  let text = g.candidates?.[0]?.content?.parts?.[0]?.text ?? '';\n  const fence = String.fromCharCode(96).repeat(3);\n  text = text\n    .replace(new RegExp('^' + fence + 'json\\\\s*', 'i'), '')\n    .replace(new RegExp(fence + '\\\\s*$'), '')\n    .trim();\n\n  let ai;\n  try {\n    ai = JSON.parse(text);\n  } catch (e) {\n    throw new Error('Gemini não retornou JSON válido: ' + String(text).slice(0, 800));\n  }\n\n  function deepMerge(base, patch) {\n    const out = { ...(base || {}) };\n    if (!patch || typeof patch !== 'object') return out;\n    for (const [k, v] of Object.entries(patch)) {\n      if (v == null) continue;\n      if (Array.isArray(v)) {\n        const prev = Array.isArray(out[k]) ? out[k] : [];\n        out[k] = [...new Set(prev.concat(v).map((x) => String(x)))].slice(-40);\n      } else if (typeof v === 'object') {\n        out[k] = deepMerge(out[k] && typeof out[k] === 'object' ? out[k] : {}, v);\n      } else {\n        out[k] = v;\n      }\n    }\n    return out;\n  }\n\n  let reply = String(\n    ai.resposta_paciente ||\n      'Obrigada pela mensagem. Estou aqui para apoiar no seu acompanhamento. Este canal não substitui a consulta presencial com a equipe de saúde.',\n  );\n\n  const banned = /\\b(emerg[eê]ncia|emergencial|urg[eê]ncia|urgente|imediato|corra|correr)\\b/gi;\n  reply = reply.replace(banned, '').replace(/\\s{2,}/g, ' ').trim();\n\n  let memoria = deepMerge(mp.memoria || {}, ai.memoria_patch || {});\n  if (ai.consulta && typeof ai.consulta === 'object') {\n    memoria.clinico = deepMerge(memoria.clinico || {}, ai.consulta);\n  }\n\n  let consentimento = String(mp.consentimento || 'pending');\n  let status = String(mp.status || 'open');\n  let consentimento_em = null;\n  let fechado_em = null;\n  const nowIso = new Date().toISOString();\n\n  const cr = ai.consentimento_resposta;\n  if (cr === 'sim' || cr === 'SIM' || cr === true) {\n    consentimento = 'accepted';\n    consentimento_em = nowIso;\n  }\n  if (cr === 'nao' || cr === 'não' || cr === 'NAO' || cr === 'NÃO' || cr === false) {\n    consentimento = 'declined';\n    consentimento_em = nowIso;\n    status = 'closed_user';\n    fechado_em = nowIso;\n    reply =\n      'Tudo bem. Sem o seu consentimento não seguimos com o atendimento por aqui. Cuide-se e conte com a equipe de saúde do seu acompanhamento presencial.';\n  }\n\n  if (ai.encerrar_ticket === true) {\n    status = 'closed_user';\n    fechado_em = nowIso;\n  }\n\n  const msg = String(prep.message || '').trim();\n  let h = prior;\n  h.push({ role: 'user', parts: [{ text: msg }] });\n  h.push({ role: 'model', parts: [{ text: reply }] });\n  h = h.slice(-40);\n\n  const gestante_id = mp.gestante_id || prep.gestante_id || '';\n\n  if (consentimento === 'accepted' && prep.telefone) {\n    try {\n      let base = String($env.SUPABASE_URL ?? '');\n      if (base.endsWith('/')) base = base.slice(0, -1);\n      const key = $env.SUPABASE_SERVICE_ROLE_KEY;\n      await helpers.httpRequest({\n        method: 'POST',\n        url: base + '/rest/v1/gestrisk_gestantes_cadastro?on_conflict=telefone',\n        headers: {\n          apikey: key,\n          Authorization: 'Bearer ' + key,\n          'Content-Type': 'application/json',\n          Prefer: 'resolution=merge-duplicates,return=minimal',\n        },\n        body: {\n          telefone: String(prep.telefone).replace(/\\D/g, ''),\n          nome: memoria.nome || null,\n          consentimento: 'accepted',\n          consentimento_em: consentimento_em || nowIso,\n          gestante_id: gestante_id || null,\n          updated_at: nowIso,\n        },\n        json: true,\n      });\n    } catch (e) {\n      // não interrompe o fluxo\n    }\n  }\n\n  return [\n    {\n      json: {\n        resposta_paciente: reply,\n        telefone: prep.telefone,\n        chatId: prep.chatId,\n        session: prep.session,\n        gestante_id,\n        ai,\n        sessao_body: {\n          chat_id: prep.chatId,\n          gestante_id,\n          historico: h,\n          status,\n          consentimento,\n          consentimento_em,\n          fechado_em,\n          ultima_interacao_em: nowIso,\n          timeout_minutos: mp.timeout_minutos || 1440,\n          memoria,\n          updated_at: nowIso,\n        },\n      },\n    },\n  ];\n})();"
       },
       "id": "e5f6a7b8-c9d0-1234-ef01-345678901234",
       "name": "Montar_resposta",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
+        1500,
+        -400
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const prep = $('Mesclar_Laravel_gestante').first().json;\nconst sess = $('Supabase_GET_sessao').first().json;\nconst nowIso = new Date().toISOString();\n\nconst reply = String(\n  sess.mensagem_encerramento ||\n    'Esta conversa já foi finalizada. Se precisar de um novo atendimento, envie uma nova mensagem.',\n);\n\nconst row = sess.row || {};\nconst historico = Array.isArray(row.historico) ? row.historico.slice(-40) : [];\nhistorico.push({ role: 'user', parts: [{ text: String(prep.message || '') }] });\nhistorico.push({ role: 'model', parts: [{ text: reply }] });\n\nconst status = String(sess.status || 'closed_user');\nconst consentimento = String(sess.consentimento || 'pending');\n\nreturn [\n  {\n    json: {\n      resposta_paciente: reply,\n      telefone: prep.telefone,\n      chatId: prep.chatId,\n      session: prep.session,\n      gestante_id: prep.gestante_id || (row.gestante_id ? String(row.gestante_id) : ''),\n      sessao_body: {\n        chat_id: prep.chatId,\n        gestante_id: prep.gestante_id || row.gestante_id || null,\n        historico,\n        status,\n        consentimento,\n        consentimento_em: row.consentimento_em || null,\n        fechado_em: row.fechado_em || (status.startsWith('closed') ? nowIso : null),\n        ultima_interacao_em: nowIso,\n        timeout_minutos: sess.timeout_minutos || 1440,\n        memoria: sess.memoria || {},\n        updated_at: nowIso,\n      },\n    },\n  },\n];"
+      },
+      "id": "resp-encerrar-01",
+      "name": "Resposta_encerramento",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
         1000,
-        0
+        -160
       ]
     },
     {
@@ -174,13 +314,13 @@
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify({ mensagem: String($json.resposta_paciente || ''), tipo: 'saida' }) }}",
         "options": {
-          "timeout": 30000,
           "response": {
             "response": {
-              "neverError": true,
-              "fullResponse": true
+              "fullResponse": true,
+              "neverError": true
             }
-          }
+          },
+          "timeout": 30000
         }
       },
       "id": "f1a2b3c4-d5e6-4789-a012-34567890abbb",
@@ -188,18 +328,18 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1180,
-        0
+        1680,
+        -280
       ],
-      "continueOnFail": true,
       "retryOnFail": true,
       "maxTries": 3,
-      "waitBetweenTries": 65000
+      "waitBetweenTries": 65000,
+      "continueOnFail": true
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "={{ $env.SUPABASE_URL.replace(/\\/$/, '') + '/rest/v1/gestrisk_sessoes' }}",
+        "url": "={{ $env.SUPABASE_URL.replace(/\\/$/, '') + '/rest/v1/gestrisk_sessoes?on_conflict=chat_id' }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -223,7 +363,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($('Montar_resposta').first().json.sessao_body) }}",
+        "jsonBody": "={{ JSON.stringify($('Montar_resposta').isExecuted ? $('Montar_resposta').first().json.sessao_body : $('Resposta_encerramento').first().json.sessao_body) }}",
         "options": {}
       },
       "id": "f6a7b8c9-d0e1-2345-f012-456789012345",
@@ -231,8 +371,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1360,
-        0
+        1860,
+        -280
       ],
       "continueOnFail": true
     },
@@ -242,7 +382,7 @@
         "url": "=http://waha:3000/api/sendText",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ session: $('Montar_resposta').first().json.session, chatId: $('Montar_resposta').first().json.chatId, text: $('Montar_resposta').first().json.resposta_paciente }) }}",
+        "jsonBody": "={{ JSON.stringify({ session: ($('Montar_resposta').isExecuted ? $('Montar_resposta').first().json.session : $('Resposta_encerramento').first().json.session), chatId: ($('Montar_resposta').isExecuted ? $('Montar_resposta').first().json.chatId : $('Resposta_encerramento').first().json.chatId), text: ($('Montar_resposta').isExecuted ? $('Montar_resposta').first().json.resposta_paciente : $('Resposta_encerramento').first().json.resposta_paciente) }) }}",
         "options": {}
       },
       "id": "b8c9d0e1-f2a3-4567-1234-678901234567",
@@ -250,8 +390,8 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        1540,
-        0
+        2040,
+        -280
       ],
       "continueOnFail": true
     },
@@ -266,22 +406,8 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        1720,
-        0
-      ]
-    },
-    {
-      "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "const prep = $('Preparar_WAHA').first().json;\nconst laravelItem = $('Laravel_log_entrada').first().json;\n\nfunction parseBody(raw) {\n  if (raw == null) return null;\n  let b = raw.body !== undefined ? raw.body : raw;\n  if (typeof b === 'string') {\n    try {\n      b = JSON.parse(b);\n    } catch (e) {\n      return null;\n    }\n  }\n  return b && typeof b === 'object' ? b : null;\n}\n\nconst status = laravelItem.statusCode ?? laravelItem.status;\nconst body = parseBody(laravelItem);\nconst ok = status === 201 || status === '201';\n\nlet gestante_id = '';\nif (ok && body && body.gestante_id != null && body.gestante_id !== '') {\n  gestante_id = String(body.gestante_id);\n}\n\nif (!gestante_id && prep.gestante_id) {\n  gestante_id = String(prep.gestante_id);\n}\n\nconst fallback = $env.GESTRISK_DEFAULT_GESTANTE_ID || '';\nif (!gestante_id && fallback) {\n  gestante_id = String(fallback);\n}\n\nreturn [\n  {\n    json: {\n      ...prep,\n      gestante_id,\n      laravel_gestante_id: ok && body ? body.gestante_id : null,\n    },\n  },\n];"
-      },
-      "id": "8464d689-7106-4375-8386-ee877f84fd6e",
-      "name": "Mesclar_Laravel_gestante",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        410,
-        0
+        2220,
+        -280
       ]
     }
   ],
@@ -319,7 +445,65 @@
         ]
       ]
     },
+    "Mesclar_Laravel_gestante": {
+      "main": [
+        [
+          {
+            "node": "IF_pular_ia_laravel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_pular_ia_laravel": {
+      "main": [
+        [
+          {
+            "node": "Respond_Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Supabase_GET_sessao",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Supabase_GET_sessao": {
+      "main": [
+        [
+          {
+            "node": "IF_continuar_gemini",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_continuar_gemini": {
+      "main": [
+        [
+          {
+            "node": "Laravel_RAG",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resposta_encerramento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Laravel_RAG": {
       "main": [
         [
           {
@@ -363,6 +547,17 @@
         ]
       ]
     },
+    "Resposta_encerramento": {
+      "main": [
+        [
+          {
+            "node": "Laravel_log_saida",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Laravel_log_saida": {
       "main": [
         [
@@ -395,21 +590,15 @@
           }
         ]
       ]
-    },
-    "Mesclar_Laravel_gestante": {
-      "main": [
-        [
-          {
-            "node": "Supabase_GET_sessao",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
     }
   },
   "pinData": {},
   "settings": {
-    "executionOrder": "v1"
-  }
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
 }
